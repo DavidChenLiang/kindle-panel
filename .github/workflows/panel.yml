@@ -4,9 +4,17 @@ on:
   schedule:
     - cron: "*/30 * * * *"
   workflow_dispatch:
+  push:
+    paths:
+      - "generate_panel_public.py"
+      - ".github/workflows/panel.yml"
 
 permissions:
   contents: write
+
+concurrency:
+  group: panel-build
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -34,5 +42,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add docs/panel.png
-          git commit -m "chore: update panel $(date -u +%Y-%m-%dT%H:%M:%SZ)" || echo "no changes"
-          git push
+          if git diff --cached --quiet; then
+            echo "面板无变化，跳过提交"
+          else
+            git commit -m "chore: update panel $(TZ=Asia/Shanghai date +%Y-%m-%dT%H:%M)"
+            git push
+          fi
