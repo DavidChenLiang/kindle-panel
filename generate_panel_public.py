@@ -154,10 +154,12 @@ def build(out_path):
     headlines = get_headlines()
     quote = get_quote()
 
-    clock = now.strftime("%H:%M")
-    date = now.strftime("%Y年%-m月%-d日 周") + "一二三四五六日"[now.weekday()]
-    tbox(draw, (MARGIN, 40, W - MARGIN, 200), clock, F(150), anchor="la")
-    tbox(draw, (MARGIN, 190, W - MARGIN, 270), date, F(44), anchor="la")
+    date_main = now.strftime("%-m月%-d日")
+    weekday = "周" + "一二三四五六日"[now.weekday()]
+    updated = now.strftime("%H:%M")
+    tbox(draw, (MARGIN, 50, W - MARGIN, 190), date_main, F(118), anchor="la")
+    tbox(draw, (MARGIN, 190, W - MARGIN, 250),
+         f"{weekday}  ·  更新于 {updated}", F(38), fill=GRAY, anchor="la")
     wtxt = f"{weather['desc']}  {weather['temp']}°"
     wb = draw.textbbox((0, 0), wtxt, font=F(56))
     tbox(draw, (W - MARGIN - (wb[2] - wb[0]), 60, W - MARGIN, 130), wtxt, F(56), anchor="ra")
