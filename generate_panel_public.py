@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import time
 import urllib.request
 import xml.etree.ElementTree as ET
 
@@ -93,9 +94,9 @@ KLINE_SPECS = [
     ("usIXIC",   "纳斯达克"),
     ("sh600036", "招商银行"),
 ]
-BAR_GROUP = 10        # 每根蜡烛 = 10 个交易日 ≈ 两周
 BAR_COUNT = 8         # 一共 8 根 ≈ 16 周 ≈ 4 个月
 FETCH_DAYS = 120      # 多拉一些余量, 免得节假日把分组截短
+REQ_GAP = 0.6         # 腾讯日K接口有频率限制, 连续快速请求会返回空
 
 
 def fetch_kline(code):
@@ -104,7 +105,12 @@ def fetch_kline(code):
     url = ("https://web.ifzq.gtimg.cn/appstock/app/%s/get?param=%s,day,,,%d,qfq"
            % (host, code, FETCH_DAYS))
     d = json.loads(http_get(url, timeout=15))
-    node = d["data"][code]
+    data = d.get("data") if isinstance(d, dict) else None
+    if not isinstance(data, dict):
+        return []          # 接口偶发会返回异常结构, 交给上层用兜底波形
+    node = data.get(code)
+    if not isinstance(node, dict):
+        return []
     rows = None
     for key in ("qfqday", "day", "hfqday"):
         if isinstance(node.get(key), list) and node[key]:
@@ -122,22 +128,28 @@ def fetch_kline(code):
     return bars
 
 
-def _week_index(dstr):
-    """把 'YYYY-MM-DD' 折算成连续周序号, 跨年也单调递增。"""
-    d = datetime.date(int(dstr[0:4]), int(dstr[5:7]), int(dstr[8:10]))
-    iso = d.isocalendar()
-    return iso[0] * 53 + iso[1]
+def _to_date(s):
+    return datetime.date(int(s[0:4]), int(s[5:7]), int(s[8:10]))
 
 
-def aggregate(bars, weeks=2, count=BAR_COUNT):
-    """按日历周分组（每 weeks 周一根蜡烛）, 这样 A 股和美股的横轴时间完全对齐;
-    若按交易日计数分组, 两个市场节假日不同, 起点会错开几天, 日期刻度就对不上。"""
+def aggregate(bars, days=14, count=BAR_COUNT):
+    """以最后一个交易日为终点往回切, 每 days 个自然日一根蜡烛。
+
+    不用 ISO 周配对: 按自然周配对时, 最后那一组会被切在周中(只含 5 个交易日),
+    它的涨跌幅度与前面 10 个交易日的组不可比, 最后一根蜡烛会突然变成巨人。
+    以终点为基准往回切, 每组都是完整的 14 天, 所有标的横轴也严格对齐。
+    """
+    if not bars:
+        return []
+    end = _to_date(bars[-1][0])
     groups = {}
     for b in bars:
-        groups.setdefault(_week_index(b[0]) // weeks, []).append(b)
-    keys = sorted(groups)[-count:]
+        off = (end - _to_date(b[0])).days
+        if off < 0:
+            continue
+        groups.setdefault(off // days, []).append(b)
     out = []
-    for k in keys:
+    for k in sorted(groups)[0:count][::-1]:   # 取最近 count 组, 再按时间正序
         chunk = sorted(groups[k], key=lambda x: x[0])
         o = chunk[0][1]
         c = chunk[-1][2]
@@ -160,14 +172,22 @@ def _fake_candles(seed):
 def get_klines():
     out = []
     for i, (code, name) in enumerate(KLINE_SPECS):
-        try:
-            bars = fetch_kline(code)
-        except Exception:
-            bars = []
+        if i > 0:
+            time.sleep(REQ_GAP)   # 拉开间隔, 否则第 4~5 只必被限流返回空
+        bars = []
+        for attempt in range(2):  # 限流是偶发的, 重试一次基本都能救回来
+            try:
+                bars = fetch_kline(code)
+            except Exception:
+                bars = []
+            if len(bars) >= 20:
+                break
+            time.sleep(1.2)
         candles = aggregate(bars) if bars else []
         ok = len(candles) >= 2
         if not ok:
             candles = _fake_candles(i * 3)
+            print("[warn] %s K线拉取失败(%d 条), 使用占位波形" % (name, len(bars)))
         # 涨跌幅用最近一个交易日(而不是双周), 与日常看盘口径一致;
         # 最后一根蜡烛是"进行中"的周期, 用它算涨跌会前后不可比。
         chg = 0.0
