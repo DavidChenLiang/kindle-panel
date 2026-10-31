@@ -84,7 +84,7 @@ def get_weather():
         return {"temp": 21, "desc": "多云", "humidity": 65, "tmax": 25, "tmin": 16, "ok": False}
 
 
-# ---------------------------------------------------------------- 日K线
+# ---------------------------------------------------------------- 双周K线
 
 KLINE_SPECS = [
     ("sh000001", "上证指数"),
@@ -93,14 +93,16 @@ KLINE_SPECS = [
     ("usIXIC",   "纳斯达克"),
     ("sh600036", "招商银行"),
 ]
-KLINE_DAYS = 30
+BAR_GROUP = 10        # 每根蜡烛 = 10 个交易日 ≈ 两周
+BAR_COUNT = 8         # 一共 8 根 ≈ 16 周 ≈ 4 个月
+FETCH_DAYS = 120      # 多拉一些余量, 免得节假日把分组截短
 
 
 def fetch_kline(code):
-    """返回 [(open, close, high, low), ...], 按时间正序。"""
+    """返回 [(date, open, close, high, low), ...], 按时间正序。"""
     host = "usfqkline" if code.startswith("us") else "fqkline"
     url = ("https://web.ifzq.gtimg.cn/appstock/app/%s/get?param=%s,day,,,%d,qfq"
-           % (host, code, KLINE_DAYS))
+           % (host, code, FETCH_DAYS))
     d = json.loads(http_get(url, timeout=15))
     node = d["data"][code]
     rows = None
@@ -114,21 +116,45 @@ def fetch_kline(code):
     for r in rows:
         try:
             # 腾讯格式: [日期, 开, 收, 高, 低, 成交量]
-            bars.append((float(r[1]), float(r[2]), float(r[3]), float(r[4])))
+            bars.append((str(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4])))
         except (ValueError, IndexError, TypeError):
             continue
-    return bars[-KLINE_DAYS:]
-
-
-def _fake_bars(seed):
-    """接口挂掉时的兜底波形, 保证版面不出现空洞。"""
-    bars = []
-    base = 100.0
-    for i in range(KLINE_DAYS):
-        op = base + math.sin((i + seed) / 3.2) * 5 + i * 0.25
-        cl = op + math.sin((i + seed) * 1.7) * 1.6 + 0.3
-        bars.append((op, cl, max(op, cl) + 1.1, min(op, cl) - 1.1))
     return bars
+
+
+def _week_index(dstr):
+    """把 'YYYY-MM-DD' 折算成连续周序号, 跨年也单调递增。"""
+    d = datetime.date(int(dstr[0:4]), int(dstr[5:7]), int(dstr[8:10]))
+    iso = d.isocalendar()
+    return iso[0] * 53 + iso[1]
+
+
+def aggregate(bars, weeks=2, count=BAR_COUNT):
+    """按日历周分组（每 weeks 周一根蜡烛）, 这样 A 股和美股的横轴时间完全对齐;
+    若按交易日计数分组, 两个市场节假日不同, 起点会错开几天, 日期刻度就对不上。"""
+    groups = {}
+    for b in bars:
+        groups.setdefault(_week_index(b[0]) // weeks, []).append(b)
+    keys = sorted(groups)[-count:]
+    out = []
+    for k in keys:
+        chunk = sorted(groups[k], key=lambda x: x[0])
+        o = chunk[0][1]
+        c = chunk[-1][2]
+        h = max(x[3] for x in chunk)
+        l = min(x[4] for x in chunk)
+        out.append((chunk[-1][0], o, c, h, l))
+    return out
+
+
+def _fake_candles(seed):
+    candles = []
+    op = 100.0
+    for i in range(BAR_COUNT):
+        cl = op * (1 + math.sin((i + seed) * 0.9) * 0.05)
+        candles.append(("", op, cl, max(op, cl) * 1.03, min(op, cl) * 0.97))
+        op = cl
+    return candles
 
 
 def get_klines():
@@ -138,54 +164,55 @@ def get_klines():
             bars = fetch_kline(code)
         except Exception:
             bars = []
-        ok = len(bars) >= 5
+        candles = aggregate(bars) if bars else []
+        ok = len(candles) >= 2
         if not ok:
-            bars = _fake_bars(i * 7)
+            candles = _fake_candles(i * 3)
+        # 涨跌幅用最近一个交易日(而不是双周), 与日常看盘口径一致;
+        # 最后一根蜡烛是"进行中"的周期, 用它算涨跌会前后不可比。
         chg = 0.0
-        if len(bars) >= 2 and bars[-2][1]:
-            chg = (bars[-1][1] - bars[-2][1]) / bars[-2][1] * 100.0
-        out.append((name, bars, chg, ok))
+        if len(bars) >= 2 and bars[-2][2]:
+            chg = (bars[-1][2] - bars[-2][2]) / bars[-2][2] * 100.0
+        out.append((name, candles, chg, ok))
     return out
 
 
-def draw_trend(draw, box, bars):
-    """收盘价折线 + 日内高低影线。
-
-    为什么不是蜡烛图: 30 天价格区间常是日内振幅的 10~20 倍, 在 170px 高的
-    条带里蜡烛实体只剩 3~5px、影线几乎不可见, 退化成"小方块带", 读不出趋势。
-    折线保住了形状, 淡影线保住每天的波动, 是财经印刷品的通行做法。
-    """
+def draw_candles(draw, box, candles):
+    """双周蜡烛图: 每根覆盖两周的开高低收, 实体和影线都立得起来。"""
     x0, y0, x1, y1 = [int(round(v)) for v in box]
-    if not bars or x1 <= x0 or y1 <= y0:
+    if not candles or x1 <= x0 or y1 <= y0:
         return
-    hi = max(b[2] for b in bars)
-    lo = min(b[3] for b in bars)
+    hi = max(c[3] for c in candles)
+    lo = min(c[4] for c in candles)
     if hi <= lo:
         hi, lo = hi + 1.0, lo - 1.0
-    pad = (hi - lo) * 0.08
+    pad = (hi - lo) * 0.10
     hi += pad
     lo -= pad
     span = hi - lo
     hgt = y1 - y0
-    n = len(bars)
+    n = len(candles)
     step = (x1 - x0) / float(n)
+    bw = max(8, int(step * 0.36))
+    half = bw // 2
+    centers = [int(round(x0 + step * (i + 0.5))) for i in range(n)]
 
     def yv(v):
         return int(round(y1 - (v - lo) / span * hgt))
 
-    # 1) 每日高低影线, 先画, 让折线压在上面
-    for i, (op, cl, hh, ll) in enumerate(bars):
-        cx = int(round(x0 + step * (i + 0.5)))
-        draw.line([(cx, yv(hh)), (cx, yv(ll))], fill=GRAY, width=2)
-
-    # 2) 收盘价折线
-    pts = [(int(round(x0 + step * (i + 0.5))), yv(cl)) for i, (op, cl, hh, ll) in enumerate(bars)]
-    if len(pts) > 1:
-        draw.line(pts, fill=BLACK, width=4, joint="curve")
-
-    # 3) 首尾端点: 起点空心, 终点实心
-    draw.ellipse([pts[0][0] - 6, pts[0][1] - 6, pts[0][0] + 6, pts[0][1] + 6], fill=WHITE, outline=BLACK, width=2)
-    draw.ellipse([pts[-1][0] - 7, pts[-1][1] - 7, pts[-1][0] + 7, pts[-1][1] + 7], fill=BLACK)
+    for i, (_d, op, cl, hh, ll) in enumerate(candles):
+        cx = centers[i]
+        # 影线: 贯穿最高到最低
+        draw.line([(cx, yv(hh)), (cx, yv(ll))], fill=BLACK, width=3)
+        top, btm = yv(max(op, cl)), yv(min(op, cl))
+        if btm - top < 4:
+            mid = (top + btm) // 2
+            top, btm = mid - 2, mid + 2
+        if cl >= op:
+            draw.rectangle([cx - half, top, cx + half, btm], fill=BLACK)
+        else:
+            draw.rectangle([cx - half, top, cx + half, btm], fill=WHITE, outline=BLACK, width=3)
+    return centers
 
 
 # ---------------------------------------------------------------- 其他数据
@@ -287,25 +314,38 @@ def build(out_path):
         tbox(draw, (W - MARGIN - 420, 176, W - MARGIN, 212), "(样例数据)", F(22), fill=GRAY, anchor="ra")
     draw.line([(MARGIN, 248), (W - MARGIN, 248)], fill=LIGHT, width=2)
 
-    # ---------------- 行情走势（占满整幅宽，每标的独立归一化）
-    tbox(draw, (MARGIN, 268, W - MARGIN, 320), "行情 · 近一月收盘走势", F(32), anchor="la")
-    k_top, k_bot = 340, 1250
+    # ---------------- 行情双周K线（占满整幅宽，每标的独立归一化）
+    tbox(draw, (MARGIN, 268, W - MARGIN, 320), "行情 · 双周 K 线", F(32), anchor="la")
+    tbox(draw, (W - MARGIN - 620, 280, W - MARGIN, 316),
+         "每根 2 周  ·  涨实心 / 跌空心", F(22), fill=GRAY, anchor="ra")
+    k_top, k_bot = 336, 1250
     n = max(len(klines), 1)
     row_h = (k_bot - k_top) // n
     label_w = 172
     chart_x0 = MARGIN + label_w
     chart_x1 = W - MARGIN
 
-    for i, (name, bars, chg, ok) in enumerate(klines):
+    for i, (name, candles, chg, ok) in enumerate(klines):
         ry = k_top + i * row_h
         if i > 0:
             draw.line([(MARGIN, ry), (W - MARGIN, ry)], fill=LIGHT, width=1)
-        tbox(draw, (MARGIN + 4, ry + 34, MARGIN + label_w - 12, ry + 80), name, F(32), anchor="la")
+        tbox(draw, (MARGIN + 4, ry + 32, MARGIN + label_w - 12, ry + 76), name, F(32), anchor="la")
         arrow = "▲" if chg >= 0 else "▼"
         note = f"{arrow}{abs(chg):.2f}%" if ok else "—"
-        tbox(draw, (MARGIN + 4, ry + 84, MARGIN + label_w - 12, ry + 120),
+        tbox(draw, (MARGIN + 4, ry + 78, MARGIN + label_w - 12, ry + 114),
              note, F(24), fill=GRAY, anchor="la")
-        draw_trend(draw, (chart_x0, ry + 16, chart_x1, ry + row_h - 16), bars)
+        centers = draw_candles(draw, (chart_x0, ry + 12, chart_x1, ry + row_h - 34), candles) or []
+        # 每根蜡烛下方标出该段时间的截止日
+        for cx, cd in zip(centers, candles):
+            if not cd[0]:
+                continue
+            s = cd[0]
+            try:
+                tag = "%d/%d" % (int(s[5:7]), int(s[8:10]))
+            except (ValueError, IndexError):
+                continue
+            tbox(draw, (cx - 44, ry + row_h - 30, cx + 44, ry + row_h - 8),
+                 tag, F(17), fill=GRAY, anchor="ma")
 
     draw.line([(MARGIN, 1266), (W - MARGIN, 1266)], fill=LIGHT, width=2)
 
