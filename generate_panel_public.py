@@ -327,6 +327,26 @@ QUOTES = [
 ]
 
 
+def _interleave(items):
+    """按作者轮流取, 让相邻两天尽量不是同一个人。
+
+    上面那段按作者分组写, 可读性好, 但直接按日期取模会连排一周巴菲特
+    ("—— 巴菲特"连看八天很单调)。这里把各组打散成交替顺序。
+    """
+    buckets = {}
+    for q in items:
+        buckets.setdefault(q[1] or "通识", []).append(q)
+    out = []
+    while any(buckets.values()):
+        for k in list(buckets):
+            if buckets[k]:
+                out.append(buckets[k].pop(0))
+    return out
+
+
+QUOTES = _interleave(QUOTES)
+
+
 def get_quote():
     """按日期取模: 同一天多次生成(CI 每半小时重跑)保持同一句, 跨天才换。"""
     text, who = QUOTES[datetime.date.today().toordinal() % len(QUOTES)]
