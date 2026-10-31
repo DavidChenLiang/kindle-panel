@@ -198,13 +198,27 @@ def get_klines():
     return out
 
 
-def draw_candles(draw, box, candles):
-    """双周蜡烛图: 每根覆盖两周的开高低收, 实体和影线都立得起来。"""
+def _fmt_price(v):
+    """价格刻度: 便宜的(招行 43.55)要两位小数, 指数/纳指取整就够, 再长就挤不进刻度列。"""
+    if v >= 1000:
+        return "%d" % int(round(v))
+    if v >= 100:
+        return "%.0f" % v
+    return "%.2f" % v
+
+
+def draw_candles(draw, box, candles, axis_x=None):
+    """双周蜡烛图: 每根覆盖两周的开高低收, 实体和影线都立得起来。
+
+    axis_x 给出时, 在图右侧画一列价格刻度(高/中/低): 三年走势图只有形态、
+    没有刻度的话, 读者知道"涨了"但不知道"从多少涨到多少"。
+    """
     x0, y0, x1, y1 = [int(round(v)) for v in box]
     if not candles or x1 <= x0 or y1 <= y0:
         return
-    hi = max(c[3] for c in candles)
-    lo = min(c[4] for c in candles)
+    hi_raw = max(c[3] for c in candles)      # 真实极值, 刻度用这个(不能用加过 pad 的)
+    lo_raw = min(c[4] for c in candles)
+    hi, lo = hi_raw, lo_raw
     if hi <= lo:
         hi, lo = hi + 1.0, lo - 1.0
     pad = (hi - lo) * 0.04
@@ -237,6 +251,15 @@ def draw_candles(draw, box, candles):
             mid = (top + btm) // 2
             top, btm = mid - 2, mid + 3
         draw.rectangle([cx - half, top, cx + half, btm], fill=col)
+
+    if axis_x:
+        fa = F(16)
+        for v in (hi_raw, (hi_raw + lo_raw) / 2.0, lo_raw):
+            # 夹在蜡烛区内, 否则顶端的刻度字会越界压到上一行的日期标签
+            ty = min(max(yv(v), y0 + 9), y1 - 9)
+            draw.line([(axis_x - 12, ty), (axis_x - 2, ty)], fill=BLACK, width=2)
+            tbox(draw, (axis_x + 2, ty - 10, axis_x + 92, ty + 10),
+                 _fmt_price(v), fa, fill=GRAY, anchor="la")
     return centers
 
 
@@ -441,9 +464,11 @@ def build(out_path):
     k_top, k_bot = 336, 1370       # 去掉头条后把省下的高度给 K 线, 每行 206px(原 182)
     n = max(len(klines), 1)
     row_h = (k_bot - k_top) // n
-    label_w = 172
+    # 右侧让出 76px 给价格刻度列, 左侧名称栏同步收窄 14px 补回蜡烛宽度
+    label_w = 158
     chart_x0 = MARGIN + label_w
-    chart_x1 = W - MARGIN
+    chart_x1 = W - MARGIN - 76
+    axis_x = chart_x1 + 16
 
     for i, (name, candles, chg, ok) in enumerate(klines):
         ry = k_top + i * row_h
@@ -454,7 +479,8 @@ def build(out_path):
         note = f"{arrow}{abs(chg):.2f}%" if ok else "—"
         tbox(draw, (MARGIN + 4, ry + 78, MARGIN + label_w - 12, ry + 114),
              note, F(24), fill=GRAY, anchor="la")
-        centers = draw_candles(draw, (chart_x0, ry + 12, chart_x1, ry + row_h - 34), candles) or []
+        centers = draw_candles(draw, (chart_x0, ry + 12, chart_x1, ry + row_h - 34),
+                               candles, axis_x=axis_x) or []
         # 蜡烛下方标截止日。26 根时间距仅 ~37px 而标签宽 ~46px, 全标会互相压叠,
         # 所以按可用间距抽稀; 首尾两根必标(标出区间两端), 末尾太挤时用末根替换倒数第二个。
         nc = len(candles)
