@@ -242,6 +242,8 @@ def draw_candles(draw, box, candles):
 
 # ---------------------------------------------------------------- 其他数据
 
+# 面板已不再展示"今日头条"(用户要求去掉), 取数逻辑保留着, 想恢复只需在 build()
+# 里重新调用 get_headlines() 并把绘制循环加回去, 不必重写。
 FEEDS = [
     "https://sspai.com/feed",
     "https://www.ithome.com/rss/",
@@ -348,9 +350,11 @@ QUOTES = _interleave(QUOTES)
 
 
 def get_quote():
-    """按日期取模: 同一天多次生成(CI 每半小时重跑)保持同一句, 跨天才换。"""
-    text, who = QUOTES[datetime.date.today().toordinal() % len(QUOTES)]
-    return "%s —— %s" % (text, who) if who else text
+    """按日期取模: 同一天多次生成(CI 每半小时重跑)保持同一句, 跨天才换。
+
+    返回 (正文, 署名)。通识类句子没有明确出处, who 为空串 —— 不假托名人。
+    """
+    return QUOTES[datetime.date.today().toordinal() % len(QUOTES)]
 
 
 def tbox(draw, box, s, font, fill=BLACK, anchor="la"):
@@ -390,8 +394,7 @@ def build(out_path):
     now = datetime.datetime.now()
     weather = get_weather()
     klines = get_klines()
-    headlines = get_headlines()
-    quote = get_quote()
+    quote, qwho = get_quote()
 
     # ---------------- 报头
     date_main = now.strftime("%-m月%-d日")
@@ -435,7 +438,7 @@ def build(out_path):
     tbox(draw, (W - MARGIN - 760, 280, W - MARGIN, 316), sub, F(22), fill=GRAY, anchor="ra")
     # 跨度超过 500 天时日期改用 年/月, 否则"11/14"在三年图上分不清是哪一年
     use_ym = span_days > 500
-    k_top, k_bot = 336, 1250
+    k_top, k_bot = 336, 1370       # 去掉头条后把省下的高度给 K 线, 每行 206px(原 182)
     n = max(len(klines), 1)
     row_h = (k_bot - k_top) // n
     label_w = 172
@@ -480,31 +483,19 @@ def build(out_path):
             tbox(draw, (cx - 44, ry + row_h - 30, cx + 44, ry + row_h - 8),
                  tag, F(17), fill=GRAY, anchor="ma")
 
-    draw.line([(MARGIN, 1266), (W - MARGIN, 1266)], fill=LIGHT, width=2)
+    # ---------------- 每日谏言（去掉头条后, 这块整体让给谏言放大）
+    # 区块 1390~1616, 内容垂直居中: 上方留白 ≈ 下方留白, 否则底部会空一大块。
+    draw.line([(MARGIN, 1390), (W - MARGIN, 1390)], fill=LIGHT, width=2)
+    tag_w, tag_h, tag_y = 66, 32, 1426
+    draw.rectangle([MARGIN, tag_y, MARGIN + tag_w, tag_y + tag_h], fill=BLACK)
+    tbox(draw, (MARGIN, tag_y, MARGIN + tag_w, tag_y + tag_h), "谏言", F(20), fill=WHITE, anchor="ma")
 
-    # ---------------- 今日头条（每日一句挪到标题右侧, 不另占高度）
-    tbox(draw, (MARGIN, 1286, W - MARGIN, 1338), "今日头条", F(32), anchor="la")
-    # 右侧"每日谏言": 黑底小标签 + 格言。原来只是纯灰字, 容易被当成头条的副标题;
-    # 加个标签才看得出这是一句独立的话, 而且能标出是谁说的。
-    # 标签必须在格言"前面"——放句尾会读成"……巴菲特 谏言", 像个尾注。
-    # 所以整组(标签+格言)一起右对齐。
-    fq = F(22)
-    qt = ellipsize(draw, quote, fq, 760)
-    ql, _qt, qr, _qb = draw.textbbox((0, 0), qt, font=fq)
-    qw = qr - ql
-    tag_w = 66
-    grp_x = W - MARGIN - tag_w - 16 - qw
-    draw.rectangle([grp_x, 1300, grp_x + tag_w, 1332], fill=BLACK)
-    tbox(draw, (grp_x, 1300, grp_x + tag_w, 1332), "谏言", F(20), fill=WHITE, anchor="ma")
-    tbox(draw, (grp_x + tag_w + 16, 1300, W - MARGIN, 1336), qt, fq, fill=GRAY, anchor="la")
-    ty = 1350
-    for i, title in enumerate(headlines, 1):
-        tbox(draw, (MARGIN + 2, ty + 8, MARGIN + 48, ty + 48), f"{i}", F(27), fill=GRAY, anchor="la")
-        t = ellipsize(draw, title, F(29), chart_x1 - (MARGIN + 58))
-        tbox(draw, (MARGIN + 58, ty + 8, chart_x1, ty + 48), t, F(29), anchor="la")
-        if i < len(headlines):
-            draw.line([(MARGIN, ty + 53), (W - MARGIN, ty + 53)], fill=LIGHT, width=1)
-        ty += 53
+    fq = F(48)
+    qx = MARGIN + tag_w + 26
+    qt = ellipsize(draw, quote, fq, W - MARGIN - qx)
+    tbox(draw, (qx, 1424, W - MARGIN, 1500), qt, fq, anchor="la")
+    if qwho:
+        tbox(draw, (qx, 1526, W - MARGIN, 1574), "—— " + qwho, F(28), fill=GRAY, anchor="ra")
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     img.save(out_path)
