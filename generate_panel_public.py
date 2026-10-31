@@ -39,9 +39,21 @@ F = load_font
 
 
 def http_get(url, timeout=10, encoding=None):
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 kindle-panel"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        raw = r.read()
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 kindle-panel"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read()
+    except Exception:
+        # 本机 Python 3.7 的 SSL 对部分站点握手失败(EOF in violation of protocol),
+        # 退到 curl(用系统 LibreSSL)兜底。CI 上 urllib 正常, 走不到这里。
+        import subprocess
+        proc = subprocess.run(
+            ["curl", "-sS", "--noproxy", "*", "--max-time", str(timeout), url],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        if proc.returncode != 0:
+            raise
+        raw = proc.stdout
     return raw.decode(encoding) if encoding else raw
 
 
@@ -72,8 +84,8 @@ def get_weather():
 
 
 def get_indices():
-    # 前三个是 A 股, 最后一个是隔夜美股(腾讯 usIXIC = 纳斯达克综合指数)
-    codes = ["sh000001", "sz399001", "sz399006", "usIXIC"]
+    # 三个 A 股指数 + 纳斯达克(隔夜) + 招商银行(个股)
+    codes = ["sh000001", "sz399001", "sz399006", "usIXIC", "sh600036"]
     try:
         raw = http_get("https://qt.gtimg.cn/q=" + ",".join(codes), encoding="gbk")
         order = {c: i for i, c in enumerate(codes)}
@@ -102,7 +114,8 @@ def get_indices():
     except Exception:
         pass
     return [("上证指数", 3123.45, 0.8), ("深证成指", 9876.54, -0.4),
-            ("创业板指", 1876.32, 1.2), ("纳斯达克", 25437.00, -2.86)]
+            ("创业板指", 1876.32, 1.2), ("纳斯达克", 25437.00, -2.86),
+            ("招商银行", 43.55, 1.42)]
 
 
 FEEDS = [
@@ -172,7 +185,7 @@ def build(out_path):
     tbox(draw, (MARGIN, 50, W - MARGIN, 190), date_main, F(118), anchor="la")
     tbox(draw, (MARGIN, 190, W - MARGIN, 250),
          f"{weekday}  ·  更新于 {updated}", F(38), fill=GRAY, anchor="la")
-    wtxt = f"{weather['desc']}  {weather['temp']}°"
+    wtxt = f"{weather['desc']}  {weather['temp']}℃"
     wb = draw.textbbox((0, 0), wtxt, font=F(56))
     tbox(draw, (W - MARGIN - (wb[2] - wb[0]), 60, W - MARGIN, 130), wtxt, F(56), anchor="ra")
     if not weather["ok"]:
@@ -180,21 +193,21 @@ def build(out_path):
     draw.line([(MARGIN, 280), (W - MARGIN, 280)], fill=LIGHT, width=2)
 
     col_w = (W - 2 * MARGIN - 40) // 2
-    y_top, y_bot = 300, 660
+    y_top, y_bot = 300, 760
 
     section(draw, "天气 · 上海", (MARGIN, y_top, MARGIN + col_w, y_bot))
-    wx, wy = MARGIN + 24, y_top + 80
-    tbox(draw, (wx, wy, wx + col_w, wy + 90), weather["desc"], F(60), anchor="la")
-    tbox(draw, (wx, wy + 96, wx + col_w, wy + 176), f"{weather['temp']}°C", F(68), anchor="la")
+    wx, wy = MARGIN + 24, y_top + 120
+    tbox(draw, (wx, wy, wx + col_w, wy + 100), weather["desc"], F(72), anchor="la")
+    tbox(draw, (wx, wy + 108, wx + col_w, wy + 220), f"{weather['temp']}℃", F(86), anchor="la")
     detail = []
     if weather.get("tmax") is not None:
-        detail.append(f"{weather['tmin']}~{weather['tmax']}°C")
+        detail.append(f"{weather['tmin']}~{weather['tmax']}℃")
     if weather.get("humidity") is not None:
         detail.append(f"湿度 {weather['humidity']}%")
-    tbox(draw, (wx, wy + 190, wx + col_w, wy + 240), "  ".join(detail), F(30), fill=GRAY, anchor="la")
+    tbox(draw, (wx, wy + 232, wx + col_w, wy + 280), "  ".join(detail), F(32), fill=GRAY, anchor="la")
 
     idx_x0 = MARGIN + col_w + 40
-    section(draw, "指数行情", (idx_x0, y_top, W - MARGIN, y_bot))
+    section(draw, "行情", (idx_x0, y_top, W - MARGIN, y_bot))
     # 行距按条数自适应: 3 条时 86px, 4 条时自动收窄, 避免溢出区块
     n_idx = len(indices)
     sec_top = y_top + 80
@@ -210,14 +223,14 @@ def build(out_path):
                       fill=LIGHT, width=2)
         sy += row_gap
 
-    y2, y2b = 680, 1420
+    y2, y2b = 780, 1420
     section(draw, "今日头条", (MARGIN, y2, W - MARGIN, y2b))
     ty = y2 + 80
     for i, title in enumerate(headlines, 1):
         tbox(draw, (MARGIN + 24, ty, MARGIN + 80, ty + 60), f"{i}", F(40), fill=GRAY, anchor="la")
         tbox(draw, (MARGIN + 90, ty, W - MARGIN - 24, ty + 60), title, F(34), anchor="la")
         draw.line([(MARGIN + 24, ty + 78), (W - MARGIN - 24, ty + 78)], fill=LIGHT, width=2)
-        ty += 120
+        ty += 112
 
     y3, y3b = 1440, H - MARGIN
     section(draw, "每日一句", (MARGIN, y3, W - MARGIN, y3b))
