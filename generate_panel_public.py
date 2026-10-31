@@ -16,6 +16,7 @@ from PIL import Image, ImageDraw, ImageFont
 W, H = 1264, 1680
 MARGIN = 64
 WHITE, BLACK, GRAY, LIGHT = 255, 0, 136, 180
+DARK = 85        # 跌的蜡烛用深灰实心: 78 根密排时空心框只有 6px 宽, 会碎成一串小圈
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -94,8 +95,8 @@ KLINE_SPECS = [
     ("usIXIC",   "纳斯达克"),
     ("sh600036", "招商银行"),
 ]
-BAR_COUNT = 26        # 一年 = 52 周 = 26 根双周蜡烛
-FETCH_BARS = 300      # 日K根数, 300 根≈450 自然日, 留足余量免得节假日把分组截短
+BAR_COUNT = 78        # 三年 = 156 周 = 78 根双周蜡烛
+FETCH_BARS = 800      # 日K根数, 800 根≈1150 自然日, 足够覆盖三年(1095 天)且留余量
 REQ_GAP = 0.6         # 腾讯日K接口有频率限制, 连续快速请求会返回空
 
 
@@ -180,7 +181,7 @@ def get_klines():
                 bars = fetch_kline(code)
             except Exception:
                 bars = []
-            if len(bars) >= 100:   # 一年口径至少要有 5 个月以上的日K才算拉全
+            if len(bars) >= 500:   # 三年口径至少要有 2 年以上的日K才算拉全
                 break
             time.sleep(1.2)
         candles = aggregate(bars) if bars else []
@@ -206,15 +207,17 @@ def draw_candles(draw, box, candles):
     lo = min(c[4] for c in candles)
     if hi <= lo:
         hi, lo = hi + 1.0, lo - 1.0
-    pad = (hi - lo) * 0.06
+    pad = (hi - lo) * 0.04
     hi += pad
     lo -= pad
     span = hi - lo
     hgt = y1 - y0
     n = len(candles)
     step = (x1 - x0) / float(n)
-    bw = max(8, int(step * 0.42))
-    half = bw // 2
+    # 78 根时间距只有 ~12px, 宽度按间距比例取, 但下限压到 4px:
+    # 若沿用 max(8,...) 会撑到间距的 65%, 蜡烛之间几乎没有空隙。
+    bw = max(4, int(round(step * 0.70)))
+    half = max(1, bw // 2)
     # 影线宽度跟着实体走: 一年 26 根时实体只有十几像素, 影线还用 3px 会让
     # 每根都像"十"字架, 实体反而被压没了。
     lw = 3 if bw >= 24 else (2 if bw >= 12 else 1)
@@ -225,16 +228,15 @@ def draw_candles(draw, box, candles):
 
     for i, (_d, op, cl, hh, ll) in enumerate(candles):
         cx = centers[i]
+        col = BLACK if cl >= op else DARK
         # 影线: 贯穿最高到最低
-        draw.line([(cx, yv(hh)), (cx, yv(ll))], fill=BLACK, width=lw)
+        draw.line([(cx, yv(hh)), (cx, yv(ll))], fill=col, width=lw)
         top, btm = yv(max(op, cl)), yv(min(op, cl))
+        # 实体至少 5px 高, 否则 3 年图上大部分实体只剩 2~4px, 看起来像一条虚线
         if btm - top < 5:
             mid = (top + btm) // 2
             top, btm = mid - 2, mid + 3
-        if cl >= op:
-            draw.rectangle([cx - half, top, cx + half, btm], fill=BLACK)
-        else:
-            draw.rectangle([cx - half, top, cx + half, btm], fill=WHITE, outline=BLACK, width=lw)
+        draw.rectangle([cx - half, top, cx + half, btm], fill=col)
     return centers
 
 
@@ -339,15 +341,20 @@ def build(out_path):
 
     # ---------------- 行情双周K线（占满整幅宽，每标的独立归一化）
     tbox(draw, (MARGIN, 268, W - MARGIN, 320), "行情 · 双周 K 线", F(32), anchor="la")
-    # 跨年图上"11/28"看不出是去年, 把实际数据区间写进副标题
-    sub = "近一年  ·  每根 2 周  ·  涨实心 / 跌空心"
+    # 跨年图上"11/14"看不出是去年, 把实际数据区间写进副标题, 年数按真实跨度算
+    sub = "近三年  ·  每根 2 周  ·  涨深 / 跌浅"
+    span_days, first_d, last_d = 0, "", ""
     try:
-        d0, d1 = klines[0][1][0][0], klines[0][1][-1][0]
-        sub = ("近一年 %s–%s  ·  每根 2 周  ·  涨实心 / 跌空心"
-               % (d0[2:7].replace("-", "/"), d1[2:7].replace("-", "/")))
-    except (IndexError, TypeError):
+        first_d, last_d = klines[0][1][0][0], klines[0][1][-1][0]
+        span_days = (_to_date(last_d) - _to_date(first_d)).days
+        sub = ("近 %d 年  %s–%s  ·  每根 2 周  ·  涨深 / 跌浅"
+               % (max(1, int(round(span_days / 365.0))),
+                  first_d[2:7].replace("-", "/"), last_d[2:7].replace("-", "/")))
+    except (IndexError, TypeError, ValueError):
         pass
     tbox(draw, (W - MARGIN - 760, 280, W - MARGIN, 316), sub, F(22), fill=GRAY, anchor="ra")
+    # 跨度超过 500 天时日期改用 年/月, 否则"11/14"在三年图上分不清是哪一年
+    use_ym = span_days > 500
     k_top, k_bot = 336, 1250
     n = max(len(klines), 1)
     row_h = (k_bot - k_top) // n
@@ -384,7 +391,10 @@ def build(out_path):
                 continue
             s = cd[0]
             try:
-                tag = "%d/%d" % (int(s[5:7]), int(s[8:10]))
+                if use_ym:
+                    tag = "%s/%d" % (s[2:4], int(s[5:7]))          # 23/11
+                else:
+                    tag = "%d/%d" % (int(s[5:7]), int(s[8:10]))     # 11/14
             except (ValueError, IndexError):
                 continue
             tbox(draw, (cx - 44, ry + row_h - 30, cx + 44, ry + row_h - 8),
