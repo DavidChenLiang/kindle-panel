@@ -265,8 +265,10 @@ def build(out_path):
     date_main = now.strftime("%-m月%-d日")
     weekday = "周" + "一二三四五六日"[now.weekday()]
     updated = now.strftime("%H:%M")
-    tbox(draw, (MARGIN, 40, W - MARGIN, 175), date_main, F(112), anchor="la")
-    tbox(draw, (MARGIN, 178, W - MARGIN, 226),
+    # 字体相关留白: 本机 PingFang 与 CI 的 Noto CJK 字形垂直度量不同,
+    # 日期下沿到副标题的间距按宽的一侧留, 两边都不贴。
+    tbox(draw, (MARGIN, 44, W - MARGIN, 179), date_main, F(112), anchor="la")
+    tbox(draw, (MARGIN, 186, W - MARGIN, 234),
          f"{weekday}  ·  更新于 {updated}", F(34), fill=GRAY, anchor="la")
 
     # 天气并入报头右侧(不再单占一条横带), 把高度让给图表
