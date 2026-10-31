@@ -44,7 +44,30 @@ jobs:
           git add docs/panel.png
           if git diff --cached --quiet; then
             echo "面板无变化，跳过提交"
-          else
-            git commit -m "chore: update panel $(TZ=Asia/Shanghai date +%Y-%m-%dT%H:%M)"
-            git push
+            exit 0
           fi
+          # 定时任务和本机手动推图会并发写 main, 直接 push 会被判 non-fast-forward
+          # (run 在 checkout 之后远端又前进了)。所以每次推送前先 fetch, 再把本地
+          # 新图重新挂到远端 HEAD 之上, 保证永远 fast-forward, 不会产生 merge 冲突。
+          for i in 1 2 3 4; do
+            if ! git fetch --quiet origin main; then
+              echo "fetch 失败, 第 $i 次重试"
+              sleep 5
+              continue
+            fi
+            git reset --soft origin/main || { echo "reset 失败, 第 $i 次重试"; sleep 5; continue; }
+            git add docs/panel.png
+            if git diff --cached --quiet; then
+              echo "与远端一致，无需提交"
+              exit 0
+            fi
+            git commit -q -m "chore: update panel $(TZ=Asia/Shanghai date +%Y-%m-%dT%H:%M)"
+            if git push -q origin HEAD:main; then
+              echo "pushed (attempt $i)"
+              exit 0
+            fi
+            echo "push 冲突, 第 $i 次重试"
+            sleep 5
+          done
+          echo "push 连续失败"
+          exit 1
