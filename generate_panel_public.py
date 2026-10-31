@@ -94,8 +94,8 @@ KLINE_SPECS = [
     ("usIXIC",   "纳斯达克"),
     ("sh600036", "招商银行"),
 ]
-BAR_COUNT = 8         # 一共 8 根 ≈ 16 周 ≈ 4 个月
-FETCH_DAYS = 120      # 多拉一些余量, 免得节假日把分组截短
+BAR_COUNT = 26        # 一年 = 52 周 = 26 根双周蜡烛
+FETCH_BARS = 300      # 日K根数, 300 根≈450 自然日, 留足余量免得节假日把分组截短
 REQ_GAP = 0.6         # 腾讯日K接口有频率限制, 连续快速请求会返回空
 
 
@@ -103,7 +103,7 @@ def fetch_kline(code):
     """返回 [(date, open, close, high, low), ...], 按时间正序。"""
     host = "usfqkline" if code.startswith("us") else "fqkline"
     url = ("https://web.ifzq.gtimg.cn/appstock/app/%s/get?param=%s,day,,,%d,qfq"
-           % (host, code, FETCH_DAYS))
+           % (host, code, FETCH_BARS))
     d = json.loads(http_get(url, timeout=15))
     data = d.get("data") if isinstance(d, dict) else None
     if not isinstance(data, dict):
@@ -180,7 +180,7 @@ def get_klines():
                 bars = fetch_kline(code)
             except Exception:
                 bars = []
-            if len(bars) >= 20:
+            if len(bars) >= 100:   # 一年口径至少要有 5 个月以上的日K才算拉全
                 break
             time.sleep(1.2)
         candles = aggregate(bars) if bars else []
@@ -206,15 +206,18 @@ def draw_candles(draw, box, candles):
     lo = min(c[4] for c in candles)
     if hi <= lo:
         hi, lo = hi + 1.0, lo - 1.0
-    pad = (hi - lo) * 0.10
+    pad = (hi - lo) * 0.06
     hi += pad
     lo -= pad
     span = hi - lo
     hgt = y1 - y0
     n = len(candles)
     step = (x1 - x0) / float(n)
-    bw = max(8, int(step * 0.36))
+    bw = max(8, int(step * 0.42))
     half = bw // 2
+    # 影线宽度跟着实体走: 一年 26 根时实体只有十几像素, 影线还用 3px 会让
+    # 每根都像"十"字架, 实体反而被压没了。
+    lw = 3 if bw >= 24 else (2 if bw >= 12 else 1)
     centers = [int(round(x0 + step * (i + 0.5))) for i in range(n)]
 
     def yv(v):
@@ -223,15 +226,15 @@ def draw_candles(draw, box, candles):
     for i, (_d, op, cl, hh, ll) in enumerate(candles):
         cx = centers[i]
         # 影线: 贯穿最高到最低
-        draw.line([(cx, yv(hh)), (cx, yv(ll))], fill=BLACK, width=3)
+        draw.line([(cx, yv(hh)), (cx, yv(ll))], fill=BLACK, width=lw)
         top, btm = yv(max(op, cl)), yv(min(op, cl))
-        if btm - top < 4:
+        if btm - top < 5:
             mid = (top + btm) // 2
-            top, btm = mid - 2, mid + 2
+            top, btm = mid - 2, mid + 3
         if cl >= op:
             draw.rectangle([cx - half, top, cx + half, btm], fill=BLACK)
         else:
-            draw.rectangle([cx - half, top, cx + half, btm], fill=WHITE, outline=BLACK, width=3)
+            draw.rectangle([cx - half, top, cx + half, btm], fill=WHITE, outline=BLACK, width=lw)
     return centers
 
 
@@ -336,8 +339,15 @@ def build(out_path):
 
     # ---------------- 行情双周K线（占满整幅宽，每标的独立归一化）
     tbox(draw, (MARGIN, 268, W - MARGIN, 320), "行情 · 双周 K 线", F(32), anchor="la")
-    tbox(draw, (W - MARGIN - 620, 280, W - MARGIN, 316),
-         "每根 2 周  ·  涨实心 / 跌空心", F(22), fill=GRAY, anchor="ra")
+    # 跨年图上"11/28"看不出是去年, 把实际数据区间写进副标题
+    sub = "近一年  ·  每根 2 周  ·  涨实心 / 跌空心"
+    try:
+        d0, d1 = klines[0][1][0][0], klines[0][1][-1][0]
+        sub = ("近一年 %s–%s  ·  每根 2 周  ·  涨实心 / 跌空心"
+               % (d0[2:7].replace("-", "/"), d1[2:7].replace("-", "/")))
+    except (IndexError, TypeError):
+        pass
+    tbox(draw, (W - MARGIN - 760, 280, W - MARGIN, 316), sub, F(22), fill=GRAY, anchor="ra")
     k_top, k_bot = 336, 1250
     n = max(len(klines), 1)
     row_h = (k_bot - k_top) // n
@@ -355,8 +365,21 @@ def build(out_path):
         tbox(draw, (MARGIN + 4, ry + 78, MARGIN + label_w - 12, ry + 114),
              note, F(24), fill=GRAY, anchor="la")
         centers = draw_candles(draw, (chart_x0, ry + 12, chart_x1, ry + row_h - 34), candles) or []
-        # 每根蜡烛下方标出该段时间的截止日
-        for cx, cd in zip(centers, candles):
+        # 蜡烛下方标截止日。26 根时间距仅 ~37px 而标签宽 ~46px, 全标会互相压叠,
+        # 所以按可用间距抽稀; 首尾两根必标(标出区间两端), 末尾太挤时用末根替换倒数第二个。
+        nc = len(candles)
+        step_px = (centers[1] - centers[0]) if nc > 1 else 0
+        every = max(1, int(math.ceil(86.0 / step_px))) if step_px else 1
+        idxs = list(range(0, nc, every)) if nc else []
+        if idxs and idxs[-1] != nc - 1:
+            if nc - 1 - idxs[-1] < every * 0.5:
+                idxs[-1] = nc - 1
+            else:
+                idxs.append(nc - 1)
+        pick = set(idxs)
+        for idx, (cx, cd) in enumerate(zip(centers, candles)):
+            if idx not in pick:
+                continue
             if not cd[0]:
                 continue
             s = cd[0]
