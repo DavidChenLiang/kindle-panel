@@ -72,25 +72,37 @@ def get_weather():
 
 
 def get_indices():
-    codes = ["sh000001", "sz399001", "sz399006"]
+    # 前三个是 A 股, 最后一个是隔夜美股(腾讯 usIXIC = 纳斯达克综合指数)
+    codes = ["sh000001", "sz399001", "sz399006", "usIXIC"]
     try:
         raw = http_get("https://qt.gtimg.cn/q=" + ",".join(codes), encoding="gbk")
-        out = []
+        order = {c: i for i, c in enumerate(codes)}
+        found = {}
         for line in raw.split(";"):
             if "=" not in line:
                 continue
-            body = line.split('="', 1)[1].rstrip('"')
+            head, _, body = line.partition('="')
+            body = body.rstrip('"')
+            code = head.replace("v_", "").strip()
             f = body.split("~")
             if len(f) < 6:
                 continue
-            name, cur, prev = f[1], float(f[3]), float(f[4])
-            chg = (cur - prev) / prev * 100 if prev else 0
-            out.append((name, cur, chg))
+            try:
+                name, cur, prev = f[1], float(f[3]), float(f[4])
+            except (ValueError, IndexError):
+                continue
+            if not prev:
+                continue
+            chg = (cur - prev) / prev * 100
+            found[code] = (name, cur, chg)
+        # 按传入顺序输出, 避免接口返回顺序变化导致版面跳动
+        out = [found[c] for c in codes if c in found]
         if out:
             return out
     except Exception:
         pass
-    return [("上证指数", 3123.45, 0.8), ("深证成指", 9876.54, -0.4), ("创业板指", 1876.32, 1.2)]
+    return [("上证指数", 3123.45, 0.8), ("深证成指", 9876.54, -0.4),
+            ("创业板指", 1876.32, 1.2), ("纳斯达克", 25437.00, -2.86)]
 
 
 FEEDS = [
@@ -173,7 +185,7 @@ def build(out_path):
     section(draw, "天气 · 上海", (MARGIN, y_top, MARGIN + col_w, y_bot))
     wx, wy = MARGIN + 24, y_top + 80
     tbox(draw, (wx, wy, wx + col_w, wy + 90), weather["desc"], F(60), anchor="la")
-    tbox(draw, (wx, wy + 96, wx + col_w, wy + 176), f"{weather['temp']} °C", F(68), anchor="la")
+    tbox(draw, (wx, wy + 96, wx + col_w, wy + 176), f"{weather['temp']}°C", F(68), anchor="la")
     detail = []
     if weather.get("tmax") is not None:
         detail.append(f"{weather['tmin']}~{weather['tmax']}°C")
@@ -181,15 +193,22 @@ def build(out_path):
         detail.append(f"湿度 {weather['humidity']}%")
     tbox(draw, (wx, wy + 190, wx + col_w, wy + 240), "  ".join(detail), F(30), fill=GRAY, anchor="la")
 
-    section(draw, "指数行情", (MARGIN + col_w + 40, y_top, W - MARGIN, y_bot))
-    sy = y_top + 80
-    for name, cur, chg in indices:
-        tbox(draw, (MARGIN + col_w + 64, sy, MARGIN + col_w + 64 + 180, sy + 50), name, F(34), anchor="la")
+    idx_x0 = MARGIN + col_w + 40
+    section(draw, "指数行情", (idx_x0, y_top, W - MARGIN, y_bot))
+    # 行距按条数自适应: 3 条时 86px, 4 条时自动收窄, 避免溢出区块
+    n_idx = len(indices)
+    sec_top = y_top + 80
+    row_gap = min(86, (y_bot - sec_top - 14) // max(n_idx, 1))
+    sy = sec_top
+    for i, (name, cur, chg) in enumerate(indices):
+        tbox(draw, (idx_x0 + 24, sy, idx_x0 + 204, sy + 50), name, F(34), anchor="la")
         tbox(draw, (W - MARGIN - 240, sy, W - MARGIN - 150, sy + 50), f"{cur:.2f}", F(34), anchor="ra")
         arrow = "▲" if chg >= 0 else "▼"
         tbox(draw, (W - MARGIN - 140, sy, W - MARGIN - 24, sy + 50), f"{arrow}{abs(chg):.2f}%", F(30), anchor="ra")
-        draw.line([(MARGIN + col_w + 64, sy + 58), (W - MARGIN - 24, sy + 58)], fill=LIGHT, width=2)
-        sy += 86
+        if i < n_idx - 1:
+            draw.line([(idx_x0 + 24, sy + row_gap - 12), (W - MARGIN - 24, sy + row_gap - 12)],
+                      fill=LIGHT, width=2)
+        sy += row_gap
 
     y2, y2b = 680, 1420
     section(draw, "今日头条", (MARGIN, y2, W - MARGIN, y2b))
